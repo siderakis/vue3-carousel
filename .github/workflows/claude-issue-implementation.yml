@@ -29,7 +29,7 @@ jobs:
       github.event.label.name == 'agent:claude' && github.event.issue.state == 'open') ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60 # the change, then a video of the pull request
 
     steps:
       - uses: actions/checkout@v7
@@ -43,6 +43,8 @@ jobs:
           label_trigger: agent:claude
           base_branch: master
           branch_prefix: claude/
+          plugin_marketplaces: https://github.com/bisque-cloud/presenter.git
+          plugins: presenter@bisque-cloud
           prompt: |
             Implement only the GitHub issue identified by this event:
             https://github.com/${{ github.repository }}/issues/${{ github.event.issue.number || inputs.issue_number }}
@@ -59,6 +61,30 @@ jobs:
 
             Open a draft pull request against master. Its body must include `Closes #<issue-number>`,
             a concise summary, and the validation commands/results. Never merge or enable auto-merge.
+
+            After the pull request is open, write its number as the only line of
+            ${{ runner.temp }}/explainer-pr.txt. Then decide whether it is worth a short video for someone who did not write it: yes for a design decision, a new command or option, a migration, or a change where the reasoning matters more than the diff; no for a dependency bump, formatting, a typo or a small fix. If it is, use the present skill from the presenter plugin to make a presentation of the pull request from what you have already read: what it changes, why, and what a reviewer should look at. Write index.html, context.md, assets/ and title.txt (one line, the title) to ${{ runner.temp }}/explainer. Run the skill's plan, pronunciation-report and narrate with --voice kokoro:af_heart and fix what they report. Do not run login or publish: the next step of this job publishes the folder and comments the link. If it is not worth a video, write nothing there.
           claude_args: |
-            --max-turns 50
-            --allowedTools "Read,Edit,Write,Bash(git:*),Bash(gh:*),Bash(pnpm:*),Bash(ls:*),Bash(pwd)"
+            --max-turns 100
+            --allowedTools "Read,Edit,Write,Bash(git:*),Bash(gh:*),Bash(pnpm:*),Bash(ls:*),Bash(pwd),Skill,WebFetch,Bash(node:*),Bash(mkdir:*)"
+
+      # Publishes the presentation the session above wrote, as this
+      # repository, to its bisque.today channel, and comments the link on the
+      # pull request. A separate step because claude-code-action keeps the
+      # token that publishes away from Claude's session. No folder, no publish.
+      - name: Check for a presentation
+        id: explainer
+        run: |
+          if [ -f "$RUNNER_TEMP/explainer/index.html" ] && [ -s "$RUNNER_TEMP/explainer-pr.txt" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "number=$(head -n 1 "$RUNNER_TEMP/explainer-pr.txt" | tr -cd 0-9)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish the presentation
+        if: steps.explainer.outputs.ready == 'true'
+        continue-on-error: true
+        uses: bisque-cloud/presenter@v1
+        with:
+          source: pull-request
+          pull-request: ${{ steps.explainer.outputs.number }}
+          presentation: ${{ runner.temp }}/explainer
